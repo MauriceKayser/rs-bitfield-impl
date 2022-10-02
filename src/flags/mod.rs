@@ -5,4 +5,4 @@ pub(super) mod parse;
 pub(super) mod generate;
 
 /// Stores all information about a flag type of a bit field.
-pub(super) struct Flags(crate::enumeration::Enumeration);
+pub struct Flags(pub crate::enumeration::Enumeration);

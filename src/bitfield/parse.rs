@@ -128,7 +128,7 @@ impl super::BitField {
     }
 
     /// Tries to parse the `attribute` and `item` into a `BitField` structure.
-    pub(crate) fn parse(
+    pub fn parse(
         attribute: proc_macro2::TokenStream,
         item: proc_macro2::TokenStream
     ) -> syn::Result<Self> {

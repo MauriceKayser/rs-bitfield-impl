@@ -1,7 +1,7 @@
 //! Contains code to parse bit field flags.
 
 impl super::Flags {
-    pub(crate) fn parse(item: proc_macro2::TokenStream) -> syn::Result<Self> {
+    pub fn parse(item: proc_macro2::TokenStream) -> syn::Result<Self> {
         let enumeration = crate::enumeration::Enumeration::parse(item)?;
 
         if enumeration.repr != "u8" {

@@ -4,4 +4,4 @@ pub(super) mod generate;
 pub(super) mod parse;
 
 /// Stores all information about a field of a bit field.
-pub(super) struct Field(crate::enumeration::Enumeration);
+pub struct Field(pub crate::enumeration::Enumeration);

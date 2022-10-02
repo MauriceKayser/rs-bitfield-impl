@@ -3,20 +3,14 @@ authors = ["Maurice Kayser"]
 edition = "2021"
 keywords = ["bit", "bitfield", "bitfields", "bitflag", "bitflags", "bitmask", "field", "fields", "flag", "flags", "mask"]
 license = "MIT/Apache-2.0"
-name = "bitfield"
+name = "bitfield-impl"
 readme = "README.md"
-version = "1.7.2"
-
-[lib]
-proc-macro = true
+version = "1.7.3"
 
 [dependencies]
 proc-macro2 = "1.0.43"
 quote = "1.0.21"
 syn = "1.0.99"
-
-[dev-dependencies]
-trybuild = "1.0.64"
 
 [dev-dependencies.proc-macro2]
 version = "1.0.43"

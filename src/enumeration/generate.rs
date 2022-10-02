@@ -2,7 +2,7 @@
 
 impl super::Enumeration {
     /// Generates a `core::convert::TryFrom<REPR, Error = REPR>` implementation.
-    pub(crate) fn generate_try_from(&self) -> proc_macro2::TokenStream {
+    pub fn generate_try_from(&self) -> proc_macro2::TokenStream {
         let ident = &self.ident;
         let repr = &self.repr;
         let variants = &self.variants;
