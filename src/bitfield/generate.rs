@@ -1,6 +1,6 @@
 //! Contains code to generate bit fields.
 
-use syn::spanned::Spanned;
+use syn::{ext::IdentExt, spanned::Spanned};
 
 impl super::BitField {
     /// Returns (as truthfully as possible):
@@ -292,20 +292,22 @@ impl super::BitField {
                 }
             }
         } else {
+            let unraw = getter.unraw();
+
             let getter_mask = syn::Ident::new(
-                &format!("{}_mask", getter.to_string()), getter.span()
+                &format!("{}_mask", &unraw), getter.span()
             );
             let getter_all = syn::Ident::new(
-                &format!("{}_all", getter.to_string()), getter.span()
+                &format!("{}_all", &unraw), getter.span()
             );
             let getter_any = syn::Ident::new(
-                &format!("{}_any", getter.to_string()), getter.span()
+                &format!("{}_any", &unraw), getter.span()
             );
             let setter_all = syn::Ident::new(
-                &format!("{}_all", setter.to_string()), setter.span()
+                &format!("{}_all", setter), setter.span()
             );
             let setter_none = syn::Ident::new(
-                &format!("{}_none", setter.to_string()), setter.span()
+                &format!("{}_none", setter), setter.span()
             );
 
             let base_type = &self.attr.base_type;
@@ -408,11 +410,13 @@ impl super::BitField {
                 let mut fields = vec!();
 
                 for entry in entries {
+                    let unraw = entry.ident.unraw();
+
                     fields.push(Self::generate_accessor(
                         &self, &entry.entry, &entry.ident, &syn::Ident::new(
-                            &format!("set_{}", &entry.ident), entry.ident.span()
+                            &format!("set_{}", &unraw), entry.ident.span()
                         ), &syn::Ident::new(
-                            &format!("invert_{}", &entry.ident), entry.ident.span()
+                            &format!("invert_{}", &unraw), entry.ident.span()
                         )
                     ));
                 }
@@ -473,6 +477,8 @@ impl super::BitField {
         match &self.data {
             super::Data::Named(entries) => {
                 for entry in entries {
+                    let unraw = entry.ident.unraw();
+
                     if entry.entry.field.is_some() {
                         if let Some(ident) = entry.entry.ty.get_ident() {
                             if crate::primitive::is_primitive(ident) {
@@ -487,7 +493,7 @@ impl super::BitField {
                             if *occurrences == 1 {
                                 implementations.push(Self::generate_accessor_ops_field(
                                     &self, &entry.entry.ty, &syn::Ident::new(
-                                        &format!("set_{}", &entry.ident), entry.ident.span()
+                                        &format!("set_{}", &unraw), entry.ident.span()
                                     )
                                 ));
                             }
@@ -496,9 +502,9 @@ impl super::BitField {
                         if Self::cmp_vis(&entry.entry.vis, &self.vis) >= 0 {
                             implementations.push(Self::generate_accessor_ops_flags(
                                 &self, &entry.entry.ty, &syn::Ident::new(
-                                    &format!("set_{}", &entry.ident), entry.ident.span()
+                                    &format!("set_{}", &unraw), entry.ident.span()
                                 ),&syn::Ident::new(
-                                    &format!("invert_{}", &entry.ident), entry.ident.span()
+                                    &format!("invert_{}", &unraw), entry.ident.span()
                                 )
                             ));
                         }
@@ -946,16 +952,16 @@ impl super::BitField {
 
                 for entry in entries {
                     let ident = &entry.ident;
+                    let unraw = ident.unraw();
 
                     fields.push(if entry.entry.field.is_some() {
                         // Display fields as a normal struct field.
                         super::BitField::generate_print_field(&entry.entry, ident, quote::quote! {
-                            s.field(core::stringify!(#ident), &value);
+                            s.field(core::stringify!(#unraw), &value);
                         })
                     } else {
                         // Display flags as sub structure with a `bool` field for each flag.
                         let self_ident = &self.ident;
-                        let ident = &entry.ident;
                         let ty = &entry.entry.ty;
                         let ty_name = &entry.entry.ty.segments.last().unwrap().ident;
 
@@ -974,7 +980,7 @@ impl super::BitField {
                                 }
                             }
 
-                            s.field(core::stringify!(#ident), &BitFieldDebugImplementor(&self));
+                            s.field(core::stringify!(#unraw), &BitFieldDebugImplementor(&self));
                         }}
                     });
                 }
@@ -3955,6 +3961,100 @@ mod tests {
     }
 
     #[test]
+    fn accessors_raw() {
+        assert_compare!(generate_accessors, "8", "struct A { #[field(0, 1)] r#b: u8, r#c: C }", quote::quote! {
+            impl A {
+                /// Gets the value of the field.
+                #[allow(unused)]
+                #[inline(always)]
+                const fn r#b(& self) -> u8 {
+                    self._field(0u8, 1u8) as _
+                }
+
+                /// Creates a copy of the bit field with the new value.
+                ///
+                /// Returns `None` if `value` is bigger than the specified amount of
+                /// bits for the field can store.
+                #[allow(unused)]
+                #[inline(always)]
+                #[must_use = "leaves `self` unmodified and returns a modified variant"]
+                const fn set_b(& self, value: u8) -> Option <Self> {
+                    if value >= (1 as u8).wrapping_shl(1u8 as u32) { return None; }
+                    Some (self._set_field(0u8, 1u8, value as _))
+                }
+
+                /// Returns `true` if the specified `flag` is set.
+                #[allow(unused)]
+                #[inline(always)]
+                const fn r#c(&self, flag: C) -> bool {
+                    self._bit(flag as _)
+                }
+
+                /// Returns a bit mask of all possible flags.
+                #[allow(unused)]
+                #[inline(always)]
+                const fn c_mask() -> u8 {
+                    let mut mask = 0;
+                    let mut i = 0;
+                    while i < C::iter().len() {
+                        mask |= 1 << (C::iter()[i] as u8);
+                        i += 1;
+                    }
+                    mask
+                }
+
+                /// Returns `true` if all flags are set.
+                #[allow(unused)]
+                #[inline(always)]
+                const fn c_all(&self) -> bool {
+                    (self.0 & Self::c_mask()) == Self::c_mask()
+                }
+
+                /// Returns `true` if any flag is set.
+                #[allow(unused)]
+                #[inline(always)]
+                const fn c_any(&self) -> bool {
+                    (self.0 & Self::c_mask()) != 0
+                }
+
+                /// Creates a copy of the bit field with the new value for the specified flag.
+                #[allow(unused)]
+                #[inline(always)]
+                #[must_use = "leaves `self` unmodified and returns a modified variant"]
+                const fn set_c(&self, flag: C, value: bool) -> Self {
+                    self._set_bit(flag as _, value)
+                }
+
+                /// Creates a copy of the bit field with all flags set.
+                #[allow(unused)]
+                #[inline(always)]
+                #[must_use = "leaves `self` unmodified and returns a modified variant"]
+                const fn set_c_all(&self) -> Self {
+                    let result = self.0 | Self::c_mask();
+                    Self(result)
+                }
+
+                /// Creates a copy of the bit field with all flags cleared.
+                #[allow(unused)]
+                #[inline(always)]
+                #[must_use = "leaves `self` unmodified and returns a modified variant"]
+                const fn set_c_none(&self) -> Self {
+                    let result = self.0 & !Self::c_mask();
+                    Self(result)
+                }
+
+                /// Creates a copy of the bit field with the value of the specified flag inverted.
+                #[allow(unused)]
+                #[inline(always)]
+                #[must_use = "leaves `self` unmodified and returns a modified variant"]
+                const fn invert_c(&self, flag: C) -> Self {
+                    self._invert_bit(flag as _)
+                }
+            }
+        });
+    }
+
+    #[test]
     fn assertions() {
         let non_zero_check = quote::quote! {
             const _OPTION_OF_NON_ZERO_BITFIELD_HAS_A_DIFFERENT_SIZE: [();
@@ -4597,6 +4697,53 @@ mod tests {
                 }
             }
         );
+
+        assert_compare!(
+            generate_debug, "8", "#[derive(Debug)] struct A { r#b: B }",
+            quote::quote! {
+                impl core::fmt::Debug for A {
+                    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+                        let mut s = f.debug_struct(core::stringify!(A));
+
+                        {
+                            struct BitFieldDebugImplementor<'a>(&'a A);
+
+                            impl<'a> core::fmt::Debug for BitFieldDebugImplementor<'a> {
+                                fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                                    let mut s = f.debug_struct(core::stringify!(B));
+
+                                    for flag in <B>::iter() {
+                                        s.field(&alloc::format!("{:?}", flag), &self.0.r#b(*flag));
+                                    }
+
+                                    s.finish()
+                                }
+                            }
+
+                            s.field(core::stringify!(b), &BitFieldDebugImplementor(&self));
+                        }
+
+                        s.finish()
+                    }
+                }
+            }
+        );
+
+        assert_compare!(
+            generate_debug, "32", "#[derive(Debug)] struct A { #[field(0, 16)] r#b: u16 }",
+            quote::quote! {
+                impl core::fmt::Debug for A {
+                    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+                        let mut s = f.debug_struct(core::stringify!(A));
+
+                        let value = self.r#b();
+                        s.field(core::stringify!(b), &value);
+
+                        s.finish()
+                    }
+                }
+            }
+        );
     }
 
     #[test]
@@ -4861,7 +5008,7 @@ mod tests {
     fn everything() {
         assert_eq!(
             Into::<proc_macro2::TokenStream>::into(parse_valid!(
-                "16", "/** D1 */ #[derive(Debug)] pub(crate) struct A { /** D2 */ pub(crate) b: B, /** D3 */ #[field(7, 3)] pub c: C, /** D4 */ d: D }"
+                "16", "/** D1 */ #[derive(Debug)] pub(crate) struct A { /** D2 */ pub(crate) r#b: B, /** D3 */ #[field(7, 3)] pub r#c: C, /** D4 */ d: D }"
             )).to_string(),
             quote::quote! {
                 // field
@@ -4943,7 +5090,7 @@ mod tests {
                     /// Returns `true` if the specified `flag` is set.
                     #[allow(unused)]
                     #[inline(always)]
-                    pub(crate) const fn b(&self, flag: B) -> bool {
+                    pub(crate) const fn r#b(&self, flag: B) -> bool {
                         self._bit(flag as _)
                     }
 
@@ -5024,7 +5171,7 @@ mod tests {
                     #[allow(unused)]
                     #[inline(always)]
                     #[cfg(const_trait_impl)]
-                    pub const fn c(&self) -> core::result::Result<C, u8> {
+                    pub const fn r#c(&self) -> core::result::Result<C, u8> {
                         core::convert::TryFrom::try_from(self._field(7u8, 3u8) as u8)
                     }
 
@@ -5034,7 +5181,7 @@ mod tests {
                     #[allow(unused)]
                     #[inline(always)]
                     #[cfg(not(const_trait_impl))]
-                    pub fn c(&self) -> core::result::Result<C, u8> {
+                    pub fn r#c(&self) -> core::result::Result<C, u8> {
                         core::convert::TryFrom::try_from(self._field(7u8, 3u8) as u8)
                     }
 
@@ -5295,7 +5442,7 @@ mod tests {
                                     let mut s = f.debug_struct(core::stringify!(B));
 
                                     for flag in <B>::iter() {
-                                        s.field(&alloc::format!("{:?}", flag), &self.0.b(*flag));
+                                        s.field(&alloc::format!("{:?}", flag), &self.0.r#b(*flag));
                                     }
 
                                     s.finish()
@@ -5305,7 +5452,7 @@ mod tests {
                             s.field(core::stringify!(b), &BitFieldDebugImplementor(&self));
                         }
 
-                        let value = self.c();
+                        let value = self.r#c();
                         if let core::result::Result::Ok(value) = value {
                             s.field(core::stringify!(c), &value);
                         } else {
