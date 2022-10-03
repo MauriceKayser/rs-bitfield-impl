@@ -708,11 +708,9 @@ impl super::BitField {
     /// Generates constant assertions about field type sizes and flag overlaps.
     fn generate_assertions(&self) -> proc_macro2::TokenStream {
         /// Generates a constant assertion for a constant expression.
-        fn generate_assertion(name: &syn::Ident, expression: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
-            // TODO: Wait for constant assertions with friendlier error messages.
-            // Adapted from https://crates.io/crates/static_assertions.
+        fn generate_assertion(name: &syn::Ident, message: &str, expression: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
             quote::quote! {
-                const #name: [(); 0 - #expression as usize] = [];
+                const #name: [(); if #expression { 0 } else { panic!(#message) }] = [];
             }
         }
 
@@ -727,11 +725,11 @@ impl super::BitField {
                 let size = field.size.as_ref().unwrap();
 
                 // `bits_of(FieldType)` must not be < `field.size`.
-                let field_assertion = generate_assertion(&syn::Ident::new(&format!(
-                    "_TYPE_IN_FIELD_{}_IS_SMALLER_THAN_THE_SPECIFIED_SIZE_OF_{}_BITS", i, &size
-                ), size.span()), quote::quote! {
-                    !{ const ASSERT: bool = core::mem::size_of::<#ty>() * 8 >= #size; ASSERT }
-                });
+                let field_assertion = generate_assertion(
+                    &syn::Ident::new(&format!("_TYPE_IN_FIELD_{}_IS_SMALLER_THAN_THE_SPECIFIED_SIZE_OF_{}_BITS", i, &size), size.span()),
+                    &format!("Type in field {} is smaller than the specified size of {} bits", i, &size),
+                    quote::quote! { core::mem::size_of::<#ty>() * 8 >= #size }
+                );
 
                 // Only generate this check for non-primitive types.
                 let signed_size_assertion = ty.get_ident()
@@ -739,15 +737,11 @@ impl super::BitField {
                     .unwrap_or_default()
                     .then(|| {
                         // If `FieldType` is signed, the `field.size` must be exactly `bits_of(FieldType)`.
-                        Some(generate_assertion(&syn::Ident::new(&format!(
-                            "_SIGNED_TYPE_IN_FIELD_{}_CAN_NEVER_BE_NEGATIVE", i
-                        ), size.span()), quote::quote! {
-                            !{
-                                const ASSERT: bool =
-                                    !#ty::is_signed() || core::mem::size_of::<#ty>() * 8 == #size;
-                                ASSERT
-                            }
-                        }))
+                        Some(generate_assertion(
+                            &syn::Ident::new(&format!("_SIGNED_TYPE_IN_FIELD_{}_CAN_NEVER_BE_NEGATIVE", i), size.span()),
+                            &format!("Signed type in field {} can never be negative", i),
+                            quote::quote! { !#ty::is_signed() || core::mem::size_of::<#ty>() * 8 == #size }
+                        ))
                     }).unwrap_or_default();
 
                 // Only generate the next assertions if this can not be checked in the parsing phase,
@@ -761,24 +755,18 @@ impl super::BitField {
                 }
 
                 // `bits_of(BitField)` must not be < `bits_of(Field) + size_of(Field)`.
-                let size_assertion = generate_assertion(&syn::Ident::new(&format!(
-                    "_FIELD_{}_EXCEEDS_THE_BIT_FIELD_SIZE", i
-                ), field.span), quote::quote! {
-                    !{
-                        const ASSERT: bool = core::mem::size_of::<#base_type>() * 8 >= #bit + #size;
-                        ASSERT
-                    }
-                });
+                let size_assertion = generate_assertion(
+                    &syn::Ident::new(&format!("_FIELD_{}_EXCEEDS_THE_BITFIELD_SIZE", i), field.span),
+                    &format!("Field {} exceeds the bitfield size", i),
+                    quote::quote! { core::mem::size_of::<#base_type>() * 8 >= #bit + #size }
+                );
 
                 // `bits_of(BitField)` must not be == `size_of(Field)`.
-                let size_not_equal_assertion = generate_assertion(&syn::Ident::new(&format!(
-                    "_FIELD_{}_HAS_THE_SIZE_OF_THE_WHOLE_BIT_FIELD", i
-                ), field.span), quote::quote! {
-                    !{
-                        const ASSERT: bool = core::mem::size_of::<#base_type>() * 8 != #size;
-                        ASSERT
-                    }
-                });
+                let size_not_equal_assertion = generate_assertion(
+                    &syn::Ident::new(&format!("_FIELD_{}_HAS_THE_SIZE_OF_THE_WHOLE_BITFIELD", i), field.span),
+                    &format!("Field {} has the size of the whole bitfield", i),
+                    quote::quote! { core::mem::size_of::<#base_type>() * 8 != #size }
+                );
 
                 quote::quote! {
                     #field_assertion
@@ -791,24 +779,19 @@ impl super::BitField {
                 }
             } else {
                 // `bits_of(Flags)` must be `bits_of(u8)`.
-                let size_assertion = generate_assertion(&syn::Ident::new(&format!(
-                    "_FLAGS_IN_FIELD_{}_MUST_BE_REPR_U8", i
-                ), entry.ty.span()), quote::quote! {
-                    !{ const ASSERT: bool = core::mem::size_of::<#ty>() == 1; ASSERT }
-                });
+                let size_assertion = generate_assertion(
+                    &syn::Ident::new(&format!("_FLAGS_IN_FIELD_{}_MUST_BE_REPR_U8", i), entry.ty.span()),
+                    &format!("Flags in field {} must be #[repr(u8)]", i),
+                    quote::quote! { core::mem::size_of::<#ty>() == 1 }
+                );
 
                 // `Flags::max()` must not be >= `bits_of(BitField)`.
-                let max_assertion = generate_assertion(&syn::Ident::new(&format!(
-                    "_FLAGS_IN_FIELD_{}_EXCEED_THE_BIT_FIELD_SIZE", i
-                ), entry.ty.span()), quote::quote! { !{
-                    const ASSERT: bool =
-                        core::mem::size_of::<#base_type>() * 8 > #ty::max() as usize;
-                    ASSERT
-                } });
+                let max_assertion = generate_assertion(
+                    &syn::Ident::new(&format!("_FLAGS_IN_FIELD_{}_EXCEED_THE_BITFIELD_SIZE", i), entry.ty.span()),
+                    &format!("Flags in field {} exceed the bitfield size", i),
+                    quote::quote! { core::mem::size_of::<#base_type>() * 8 > #ty::max() as usize });
 
-                let flag_assertions = entries.iter().enumerate().map(
-                    |(inner_i, inner)|
-                {
+                let flag_assertions = entries.iter().enumerate().map(|(inner_i, inner)| {
                     if i == inner_i { return proc_macro2::TokenStream::new(); }
 
                     // Do not check flag overlapping if overlapping is allowed.
@@ -829,7 +812,7 @@ impl super::BitField {
                         );
 
                         let assertion = generate_assertion(
-                            &name, quote::quote! { Self::#fn_name() }
+                            &name, &format!("Flags in field {} overlap with field {}", i, inner_i), quote::quote! { !Self::#fn_name() }
                         );
 
                         let bit = field.bit.as_ref().unwrap().base10_parse::<u8>().unwrap();
@@ -868,7 +851,7 @@ impl super::BitField {
                         );
 
                         let assertion = generate_assertion(
-                            &name, quote::quote! { Self::#fn_name() }
+                            &name, &format!("Flags in field {} overlap with flags in field {}", i, inner_i), quote::quote! { !Self::#fn_name() }
                         );
 
                         quote::quote! {
@@ -911,16 +894,9 @@ impl super::BitField {
         // Ensure `sizeof<T> == sizeof<Option<T>>` for `NonZero` bitfield types.
         if self.attr.is_non_zero {
             assertions.push(generate_assertion(
-                &syn::Ident::new(
-                    "_OPTION_OF_NON_ZERO_BITFIELD_HAS_A_DIFFERENT_SIZE",
-                    self.attr.base_type.span()
-                ), quote::quote! {!{
-                    const ASSERT: bool =
-                        core::mem::size_of::<#ident>()
-                        ==
-                        core::mem::size_of::<core::option::Option<#ident>>()
-                    ; ASSERT
-                }}
+                &syn::Ident::new("_OPTION_OF_NON_ZERO_BITFIELD_HAS_A_DIFFERENT_SIZE", self.attr.base_type.span()),
+                "Option of non-zero bitfield has a different size",
+                quote::quote! { core::mem::size_of::<#ident>() == core::mem::size_of::<core::option::Option<#ident>>() }
             ));
         }
 
@@ -3981,13 +3957,9 @@ mod tests {
     #[test]
     fn assertions() {
         let non_zero_check = quote::quote! {
-            const _OPTION_OF_NON_ZERO_BITFIELD_HAS_A_DIFFERENT_SIZE: [(); 0 - !{
-                const ASSERT: bool =
-                    core::mem::size_of::<A>()
-                        ==
-                    core::mem::size_of::<core::option::Option<A>>()
-                ; ASSERT
-            } as usize] = [];
+            const _OPTION_OF_NON_ZERO_BITFIELD_HAS_A_DIFFERENT_SIZE: [();
+                if core::mem::size_of::<A>() == core::mem::size_of::<core::option::Option<A>>() { 0 } else { panic!("Option of non-zero bitfield has a different size") }
+            ] = [];
         };
 
         assert_compare!(generate_assertions,
@@ -4000,15 +3972,13 @@ mod tests {
         );
 
         let check_1 = quote::quote! {
-            const _TYPE_IN_FIELD_0_IS_SMALLER_THAN_THE_SPECIFIED_SIZE_OF_9_BITS: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<B>() * 8 >= 9;
-                ASSERT
-            } as usize] = [];
+            const _TYPE_IN_FIELD_0_IS_SMALLER_THAN_THE_SPECIFIED_SIZE_OF_9_BITS: [();
+                if core::mem::size_of::<B>() * 8 >= 9 { 0 } else { panic!("Type in field 0 is smaller than the specified size of 9 bits") }
+            ] = [];
 
-            const _SIGNED_TYPE_IN_FIELD_0_CAN_NEVER_BE_NEGATIVE: [(); 0 - !{
-                const ASSERT: bool = !B::is_signed() || core::mem::size_of::<B>() * 8 == 9;
-                ASSERT
-            } as usize] = [];
+            const _SIGNED_TYPE_IN_FIELD_0_CAN_NEVER_BE_NEGATIVE: [();
+                if !B::is_signed() || core::mem::size_of::<B>() * 8 == 9 { 0 } else { panic!("Signed type in field 0 can never be negative") }
+            ] = [];
         };
         assert_compare!(generate_assertions,
             "16", "struct A(#[field(0, 9)] B);",
@@ -4031,15 +4001,13 @@ mod tests {
         );
 
         let check_2 = quote::quote! {
-            const _FLAGS_IN_FIELD_0_MUST_BE_REPR_U8: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<B>() == 1;
-                ASSERT
-            } as usize] = [];
+            const _FLAGS_IN_FIELD_0_MUST_BE_REPR_U8: [();
+                if core::mem::size_of::<B>() == 1 { 0 } else { panic!("Flags in field 0 must be #[repr(u8)]") }
+            ] = [];
 
-            const _FLAGS_IN_FIELD_0_EXCEED_THE_BIT_FIELD_SIZE: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<u16>() * 8 > B::max() as usize;
-                ASSERT
-            } as usize] = [];
+            const _FLAGS_IN_FIELD_0_EXCEED_THE_BITFIELD_SIZE: [();
+                if core::mem::size_of::<u16>() * 8 > B::max() as usize { 0 } else { panic!("Flags in field 0 exceed the bitfield size") }
+            ] = [];
         };
         assert_compare!(generate_assertions,
             "16", "struct A(B);",
@@ -4050,15 +4018,13 @@ mod tests {
             quote::quote!(impl A { #check_2 })
         );
         let check_2_non_zero = quote::quote! {
-            const _FLAGS_IN_FIELD_0_MUST_BE_REPR_U8: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<B>() == 1;
-                ASSERT
-            } as usize] = [];
+            const _FLAGS_IN_FIELD_0_MUST_BE_REPR_U8: [();
+                if core::mem::size_of::<B>() == 1 { 0 } else { panic!("Flags in field 0 must be #[repr(u8)]") }
+            ] = [];
 
-            const _FLAGS_IN_FIELD_0_EXCEED_THE_BIT_FIELD_SIZE: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<core::num::NonZeroU16>() * 8 > B::max() as usize;
-                ASSERT
-            } as usize] = [];
+            const _FLAGS_IN_FIELD_0_EXCEED_THE_BITFIELD_SIZE: [();
+                if core::mem::size_of::<core::num::NonZeroU16>() * 8 > B::max() as usize { 0 } else { panic!("Flags in field 0 exceed the bitfield size") }
+            ] = [];
         };
         assert_compare!(generate_assertions,
             "NonZero16", "struct A(B);",
@@ -4070,25 +4036,21 @@ mod tests {
         );
 
         let check_3 = quote::quote! {
-            const _TYPE_IN_FIELD_0_IS_SMALLER_THAN_THE_SPECIFIED_SIZE_OF_2_BITS: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<B>() * 8 >= 2;
-                ASSERT
-            } as usize] = [];
+            const _TYPE_IN_FIELD_0_IS_SMALLER_THAN_THE_SPECIFIED_SIZE_OF_2_BITS: [();
+                if core::mem::size_of::<B>() * 8 >= 2 { 0 } else { panic!("Type in field 0 is smaller than the specified size of 2 bits") }
+            ] = [];
 
-            const _SIGNED_TYPE_IN_FIELD_0_CAN_NEVER_BE_NEGATIVE: [(); 0 - !{
-                const ASSERT: bool = !B::is_signed() || core::mem::size_of::<B>() * 8 == 2;
-                ASSERT
-            } as usize] = [];
+            const _SIGNED_TYPE_IN_FIELD_0_CAN_NEVER_BE_NEGATIVE: [();
+                if !B::is_signed() || core::mem::size_of::<B>() * 8 == 2 { 0 } else { panic!("Signed type in field 0 can never be negative") }
+            ] = [];
 
-            const _FLAGS_IN_FIELD_1_MUST_BE_REPR_U8: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<C>() == 1;
-                ASSERT
-            } as usize] = [];
+            const _FLAGS_IN_FIELD_1_MUST_BE_REPR_U8: [();
+                if core::mem::size_of::<C>() == 1 { 0 } else { panic!("Flags in field 1 must be #[repr(u8)]") }
+            ] = [];
 
-            const _FLAGS_IN_FIELD_1_EXCEED_THE_BIT_FIELD_SIZE: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<u8>() * 8 > C::max() as usize;
-                ASSERT
-            } as usize] = [];
+            const _FLAGS_IN_FIELD_1_EXCEED_THE_BITFIELD_SIZE: [();
+                if core::mem::size_of::<u8>() * 8 > C::max() as usize { 0 } else { panic!("Flags in field 1 exceed the bitfield size") }
+            ] = [];
         };
         assert_compare!(
             generate_assertions, "8", "struct A { #[field(0, 2)] b: B, c: C }", quote::quote! {
@@ -4110,7 +4072,7 @@ mod tests {
                     }
 
                     const _FLAGS_IN_FIELD_1_OVERLAP_WITH_FIELD_0: [();
-                        0 - Self::_flags_in_field_1_overlap_with_field_0() as usize
+                        if !Self::_flags_in_field_1_overlap_with_field_0() { 0 } else { panic!("Flags in field 1 overlap with field 0") }
                     ] = [];
                 }
             }
@@ -4120,25 +4082,21 @@ mod tests {
             quote::quote! { impl A { #check_3 } }
         );
         let check_3_non_zero = quote::quote! {
-            const _TYPE_IN_FIELD_0_IS_SMALLER_THAN_THE_SPECIFIED_SIZE_OF_2_BITS: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<B>() * 8 >= 2;
-                ASSERT
-            } as usize] = [];
+            const _TYPE_IN_FIELD_0_IS_SMALLER_THAN_THE_SPECIFIED_SIZE_OF_2_BITS: [();
+                if core::mem::size_of::<B>() * 8 >= 2 { 0 } else { panic!("Type in field 0 is smaller than the specified size of 2 bits") }
+            ] = [];
 
-            const _SIGNED_TYPE_IN_FIELD_0_CAN_NEVER_BE_NEGATIVE: [(); 0 - !{
-                const ASSERT: bool = !B::is_signed() || core::mem::size_of::<B>() * 8 == 2;
-                ASSERT
-            } as usize] = [];
+            const _SIGNED_TYPE_IN_FIELD_0_CAN_NEVER_BE_NEGATIVE: [();
+                if !B::is_signed() || core::mem::size_of::<B>() * 8 == 2 { 0 } else { panic!("Signed type in field 0 can never be negative") }
+            ] = [];
 
-            const _FLAGS_IN_FIELD_1_MUST_BE_REPR_U8: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<C>() == 1;
-                ASSERT
-            } as usize] = [];
+            const _FLAGS_IN_FIELD_1_MUST_BE_REPR_U8: [();
+                if core::mem::size_of::<C>() == 1 { 0 } else { panic!("Flags in field 1 must be #[repr(u8)]") }
+            ] = [];
 
-            const _FLAGS_IN_FIELD_1_EXCEED_THE_BIT_FIELD_SIZE: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<core::num::NonZeroU8>() * 8 > C::max() as usize;
-                ASSERT
-            } as usize] = [];
+            const _FLAGS_IN_FIELD_1_EXCEED_THE_BITFIELD_SIZE: [();
+                if core::mem::size_of::<core::num::NonZeroU8>() * 8 > C::max() as usize { 0 } else { panic!("Flags in field 1 exceed the bitfield size") }
+            ] = [];
         };
         assert_compare!(
             generate_assertions, "NonZero8", "struct A { #[field(0, 2)] b: B, c: C }", quote::quote! {
@@ -4160,7 +4118,7 @@ mod tests {
                     }
 
                     const _FLAGS_IN_FIELD_1_OVERLAP_WITH_FIELD_0: [();
-                        0 - Self::_flags_in_field_1_overlap_with_field_0() as usize
+                        if !Self::_flags_in_field_1_overlap_with_field_0() { 0 } else { panic!("Flags in field 1 overlap with field 0") }
                     ] = [];
 
                     #non_zero_check
@@ -4173,26 +4131,22 @@ mod tests {
         );
 
         let check_4 = quote::quote! {
-            const _FLAGS_IN_FIELD_0_MUST_BE_REPR_U8: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<B>() == 1;
-                ASSERT
-            } as usize] = [];
+            const _FLAGS_IN_FIELD_0_MUST_BE_REPR_U8: [();
+                if core::mem::size_of::<B>() == 1 { 0 } else { panic!("Flags in field 0 must be #[repr(u8)]") }
+            ] = [];
 
-            const _FLAGS_IN_FIELD_0_EXCEED_THE_BIT_FIELD_SIZE: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<u8>() * 8 > B::max() as usize;
-                ASSERT
-            } as usize] = [];
+            const _FLAGS_IN_FIELD_0_EXCEED_THE_BITFIELD_SIZE: [();
+                if core::mem::size_of::<u8>() * 8 > B::max() as usize { 0 } else { panic!("Flags in field 0 exceed the bitfield size") }
+            ] = [];
         };
         let check_5 = quote::quote! {
-            const _FLAGS_IN_FIELD_1_MUST_BE_REPR_U8: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<C>() == 1;
-                ASSERT
-            } as usize] = [];
+            const _FLAGS_IN_FIELD_1_MUST_BE_REPR_U8: [();
+                if core::mem::size_of::<C>() == 1 { 0 } else { panic!("Flags in field 1 must be #[repr(u8)]") }
+            ] = [];
 
-            const _FLAGS_IN_FIELD_1_EXCEED_THE_BIT_FIELD_SIZE: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<u8>() * 8 > C::max() as usize;
-                ASSERT
-            } as usize] = [];
+            const _FLAGS_IN_FIELD_1_EXCEED_THE_BITFIELD_SIZE: [();
+                if core::mem::size_of::<u8>() * 8 > C::max() as usize { 0 } else { panic!("Flags in field 1 exceed the bitfield size") }
+            ] = [];
         };
         assert_compare!(
             generate_assertions, "8", "struct A { b: B, c: C }", quote::quote! {
@@ -4219,7 +4173,7 @@ mod tests {
                     }
 
                     const _FLAGS_IN_FIELD_0_OVERLAP_WITH_FLAGS_IN_FIELD_1: [();
-                        0 - Self::_flags_in_field_0_overlap_with_flags_in_field_1() as usize
+                        if !Self::_flags_in_field_0_overlap_with_flags_in_field_1() { 0 } else { panic!("Flags in field 0 overlap with flags in field 1") }
                     ] = [];
 
                     #check_5
@@ -4235,26 +4189,22 @@ mod tests {
             }
         );
         let check_4_non_zero = quote::quote! {
-            const _FLAGS_IN_FIELD_0_MUST_BE_REPR_U8: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<B>() == 1;
-                ASSERT
-            } as usize] = [];
+            const _FLAGS_IN_FIELD_0_MUST_BE_REPR_U8: [();
+                if core::mem::size_of::<B>() == 1 { 0 } else { panic!("Flags in field 0 must be #[repr(u8)]") }
+            ] = [];
 
-            const _FLAGS_IN_FIELD_0_EXCEED_THE_BIT_FIELD_SIZE: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<core::num::NonZeroU8>() * 8 > B::max() as usize;
-                ASSERT
-            } as usize] = [];
+            const _FLAGS_IN_FIELD_0_EXCEED_THE_BITFIELD_SIZE: [();
+                if core::mem::size_of::<core::num::NonZeroU8>() * 8 > B::max() as usize { 0 } else { panic!("Flags in field 0 exceed the bitfield size") }
+            ] = [];
         };
         let check_5_non_zero = quote::quote! {
-            const _FLAGS_IN_FIELD_1_MUST_BE_REPR_U8: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<C>() == 1;
-                ASSERT
-            } as usize] = [];
+            const _FLAGS_IN_FIELD_1_MUST_BE_REPR_U8: [();
+                if core::mem::size_of::<C>() == 1 { 0 } else { panic!("Flags in field 1 must be #[repr(u8)]") }
+            ] = [];
 
-            const _FLAGS_IN_FIELD_1_EXCEED_THE_BIT_FIELD_SIZE: [(); 0 - !{
-                const ASSERT: bool = core::mem::size_of::<core::num::NonZeroU8>() * 8 > C::max() as usize;
-                ASSERT
-            } as usize] = [];
+            const _FLAGS_IN_FIELD_1_EXCEED_THE_BITFIELD_SIZE: [();
+                if core::mem::size_of::<core::num::NonZeroU8>() * 8 > C::max() as usize { 0 } else { panic!("Flags in field 1 exceed the bitfield size") }
+            ] = [];
         };
         assert_compare!(
             generate_assertions, "NonZero8", "struct A { b: B, c: C }", quote::quote! {
@@ -4281,7 +4231,7 @@ mod tests {
                     }
 
                     const _FLAGS_IN_FIELD_0_OVERLAP_WITH_FLAGS_IN_FIELD_1: [();
-                        0 - Self::_flags_in_field_0_overlap_with_flags_in_field_1() as usize
+                        if !Self::_flags_in_field_0_overlap_with_flags_in_field_1() { 0 } else { panic!("Flags in field 0 overlap with flags in field 1") }
                     ] = [];
 
                     #check_5_non_zero
@@ -4303,30 +4253,26 @@ mod tests {
         assert_compare!(
             generate_assertions, "size", "struct A(B);", quote::quote! {
                 impl A {
-                    const _FLAGS_IN_FIELD_0_MUST_BE_REPR_U8: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<B>() == 1;
-                        ASSERT
-                    } as usize] = [];
+                    const _FLAGS_IN_FIELD_0_MUST_BE_REPR_U8: [();
+                        if core::mem::size_of::<B>() == 1 { 0 } else { panic!("Flags in field 0 must be #[repr(u8)]") }
+                    ] = [];
 
-                    const _FLAGS_IN_FIELD_0_EXCEED_THE_BIT_FIELD_SIZE: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<usize>() * 8 > B::max() as usize;
-                        ASSERT
-                    } as usize] = [];
+                    const _FLAGS_IN_FIELD_0_EXCEED_THE_BITFIELD_SIZE: [();
+                        if core::mem::size_of::<usize>() * 8 > B::max() as usize { 0 } else { panic!("Flags in field 0 exceed the bitfield size") }
+                    ] = [];
                 }
             }
         );
         assert_compare!(
             generate_assertions, "NonZeroSize", "struct A(B);", quote::quote! {
                 impl A {
-                    const _FLAGS_IN_FIELD_0_MUST_BE_REPR_U8: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<B>() == 1;
-                        ASSERT
-                    } as usize] = [];
+                    const _FLAGS_IN_FIELD_0_MUST_BE_REPR_U8: [();
+                        if core::mem::size_of::<B>() == 1 { 0 } else { panic!("Flags in field 0 must be #[repr(u8)]") }
+                    ] = [];
 
-                    const _FLAGS_IN_FIELD_0_EXCEED_THE_BIT_FIELD_SIZE: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<core::num::NonZeroUsize>() * 8 > B::max() as usize;
-                        ASSERT
-                    } as usize] = [];
+                    const _FLAGS_IN_FIELD_0_EXCEED_THE_BITFIELD_SIZE: [();
+                        if core::mem::size_of::<core::num::NonZeroUsize>() * 8 > B::max() as usize { 0 } else { panic!("Flags in field 0 exceed the bitfield size") }
+                    ] = [];
 
                     #non_zero_check
                 }
@@ -4335,50 +4281,42 @@ mod tests {
         assert_compare!(
             generate_assertions, "size", "struct A(#[field(4, 3)] B);", quote::quote! {
                 impl A {
-                    const _TYPE_IN_FIELD_0_IS_SMALLER_THAN_THE_SPECIFIED_SIZE_OF_3_BITS: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<B>() * 8 >= 3;
-                        ASSERT
-                    } as usize] = [];
+                    const _TYPE_IN_FIELD_0_IS_SMALLER_THAN_THE_SPECIFIED_SIZE_OF_3_BITS: [();
+                        if core::mem::size_of::<B>() * 8 >= 3 { 0 } else { panic!("Type in field 0 is smaller than the specified size of 3 bits") }
+                    ] = [];
 
-                    const _SIGNED_TYPE_IN_FIELD_0_CAN_NEVER_BE_NEGATIVE: [(); 0 - !{
-                        const ASSERT: bool = !B::is_signed() || core::mem::size_of::<B>() * 8 == 3;
-                        ASSERT
-                    } as usize] = [];
+                    const _SIGNED_TYPE_IN_FIELD_0_CAN_NEVER_BE_NEGATIVE: [();
+                        if !B::is_signed() || core::mem::size_of::<B>() * 8 == 3 { 0 } else { panic!("Signed type in field 0 can never be negative") }
+                    ] = [];
 
-                    const _FIELD_0_EXCEEDS_THE_BIT_FIELD_SIZE: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<usize>() * 8 >= 4 + 3;
-                        ASSERT
-                    } as usize] = [];
+                    const _FIELD_0_EXCEEDS_THE_BITFIELD_SIZE: [();
+                        if core::mem::size_of::<usize>() * 8 >= 4 + 3 { 0 } else { panic!("Field 0 exceeds the bitfield size") }
+                    ] = [];
 
-                    const _FIELD_0_HAS_THE_SIZE_OF_THE_WHOLE_BIT_FIELD: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<usize>() * 8 != 3;
-                        ASSERT
-                    } as usize] = [];
+                    const _FIELD_0_HAS_THE_SIZE_OF_THE_WHOLE_BITFIELD: [();
+                        if core::mem::size_of::<usize>() * 8 != 3 { 0 } else { panic!("Field 0 has the size of the whole bitfield") }
+                    ] = [];
                 }
             }
         );
         assert_compare!(
             generate_assertions, "NonZeroSize", "struct A(#[field(4, 3)] B);", quote::quote! {
                 impl A {
-                    const _TYPE_IN_FIELD_0_IS_SMALLER_THAN_THE_SPECIFIED_SIZE_OF_3_BITS: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<B>() * 8 >= 3;
-                        ASSERT
-                    } as usize] = [];
+                    const _TYPE_IN_FIELD_0_IS_SMALLER_THAN_THE_SPECIFIED_SIZE_OF_3_BITS: [();
+                        if core::mem::size_of::<B>() * 8 >= 3 { 0 } else { panic!("Type in field 0 is smaller than the specified size of 3 bits") }
+                    ] = [];
 
-                    const _SIGNED_TYPE_IN_FIELD_0_CAN_NEVER_BE_NEGATIVE: [(); 0 - !{
-                        const ASSERT: bool = !B::is_signed() || core::mem::size_of::<B>() * 8 == 3;
-                        ASSERT
-                    } as usize] = [];
+                    const _SIGNED_TYPE_IN_FIELD_0_CAN_NEVER_BE_NEGATIVE: [();
+                        if !B::is_signed() || core::mem::size_of::<B>() * 8 == 3 { 0 } else { panic!("Signed type in field 0 can never be negative") }
+                    ] = [];
 
-                    const _FIELD_0_EXCEEDS_THE_BIT_FIELD_SIZE: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<core::num::NonZeroUsize>() * 8 >= 4 + 3;
-                        ASSERT
-                    } as usize] = [];
+                    const _FIELD_0_EXCEEDS_THE_BITFIELD_SIZE: [();
+                        if core::mem::size_of::<core::num::NonZeroUsize>() * 8 >= 4 + 3 { 0 } else { panic!("Field 0 exceeds the bitfield size") }
+                    ] = [];
 
-                    const _FIELD_0_HAS_THE_SIZE_OF_THE_WHOLE_BIT_FIELD: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<core::num::NonZeroUsize>() * 8 != 3;
-                        ASSERT
-                    } as usize] = [];
+                    const _FIELD_0_HAS_THE_SIZE_OF_THE_WHOLE_BITFIELD: [();
+                        if core::mem::size_of::<core::num::NonZeroUsize>() * 8 != 3 { 0 } else { panic!("Field 0 has the size of the whole bitfield") }
+                    ] = [];
 
                     #non_zero_check
                 }
@@ -5255,14 +5193,13 @@ mod tests {
 
                 // assertions
                 impl A {
-                    const _FLAGS_IN_FIELD_0_MUST_BE_REPR_U8: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<B>() == 1; ASSERT
-                    } as usize] = [];
+                    const _FLAGS_IN_FIELD_0_MUST_BE_REPR_U8: [();
+                        if core::mem::size_of::<B>() == 1 { 0 } else { panic!("Flags in field 0 must be #[repr(u8)]") }
+                    ] = [];
 
-                    const _FLAGS_IN_FIELD_0_EXCEED_THE_BIT_FIELD_SIZE: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<u16>() * 8 > B::max() as usize;
-                        ASSERT
-                    } as usize] = [];
+                    const _FLAGS_IN_FIELD_0_EXCEED_THE_BITFIELD_SIZE: [();
+                        if core::mem::size_of::<u16>() * 8 > B::max() as usize { 0 } else { panic!("Flags in field 0 exceed the bitfield size") }
+                    ] = [];
 
                     const fn _flags_in_field_0_overlap_with_field_1() -> bool {
                         let flags = B::iter();
@@ -5281,7 +5218,7 @@ mod tests {
                     }
 
                     const _FLAGS_IN_FIELD_0_OVERLAP_WITH_FIELD_1: [();
-                        0 - Self::_flags_in_field_0_overlap_with_field_1() as usize
+                        if !Self::_flags_in_field_0_overlap_with_field_1() { 0 } else { panic!("Flags in field 0 overlap with field 1") }
                     ] = [];
 
                     const fn _flags_in_field_0_overlap_with_flags_in_field_2() -> bool {
@@ -5305,26 +5242,24 @@ mod tests {
                     }
 
                     const _FLAGS_IN_FIELD_0_OVERLAP_WITH_FLAGS_IN_FIELD_2: [();
-                        0 - Self::_flags_in_field_0_overlap_with_flags_in_field_2() as usize
+                        if !Self::_flags_in_field_0_overlap_with_flags_in_field_2() { 0 } else { panic!("Flags in field 0 overlap with flags in field 2") }
                     ] = [];
 
-                    const _TYPE_IN_FIELD_1_IS_SMALLER_THAN_THE_SPECIFIED_SIZE_OF_3_BITS: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<C>() * 8 >= 3; ASSERT
-                    } as usize] = [];
+                    const _TYPE_IN_FIELD_1_IS_SMALLER_THAN_THE_SPECIFIED_SIZE_OF_3_BITS: [();
+                        if core::mem::size_of::<C>() * 8 >= 3 { 0 } else { panic!("Type in field 1 is smaller than the specified size of 3 bits") }
+                    ] = [];
 
-                    const _SIGNED_TYPE_IN_FIELD_1_CAN_NEVER_BE_NEGATIVE: [(); 0 - !{
-                        const ASSERT: bool = !C::is_signed() || core::mem::size_of::<C>() * 8 == 3;
-                        ASSERT
-                    } as usize] = [];
+                    const _SIGNED_TYPE_IN_FIELD_1_CAN_NEVER_BE_NEGATIVE: [();
+                        if !C::is_signed() || core::mem::size_of::<C>() * 8 == 3 { 0 } else { panic!("Signed type in field 1 can never be negative") }
+                    ] = [];
 
-                    const _FLAGS_IN_FIELD_2_MUST_BE_REPR_U8: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<D>() == 1; ASSERT
-                    } as usize] = [];
+                    const _FLAGS_IN_FIELD_2_MUST_BE_REPR_U8: [();
+                        if core::mem::size_of::<D>() == 1 { 0 } else { panic!("Flags in field 2 must be #[repr(u8)]") }
+                    ] = [];
 
-                    const _FLAGS_IN_FIELD_2_EXCEED_THE_BIT_FIELD_SIZE: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<u16>() * 8 > D::max() as usize;
-                        ASSERT
-                    } as usize] = [];
+                    const _FLAGS_IN_FIELD_2_EXCEED_THE_BITFIELD_SIZE: [();
+                        if core::mem::size_of::<u16>() * 8 > D::max() as usize { 0 } else { panic!("Flags in field 2 exceed the bitfield size") }
+                    ] = [];
 
                     const fn _flags_in_field_2_overlap_with_field_1() -> bool {
                         let flags = D::iter();
@@ -5343,7 +5278,7 @@ mod tests {
                     }
 
                     const _FLAGS_IN_FIELD_2_OVERLAP_WITH_FIELD_1: [();
-                        0 - Self::_flags_in_field_2_overlap_with_field_1() as usize
+                        if !Self::_flags_in_field_2_overlap_with_field_1() { 0 } else { panic!("Flags in field 2 overlap with field 1") }
                     ] = [];
                 }
 
@@ -5734,14 +5669,13 @@ mod tests {
 
                 // assertions
                 impl A {
-                    const _FLAGS_IN_FIELD_0_MUST_BE_REPR_U8: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<B>() == 1; ASSERT
-                    } as usize] = [];
+                    const _FLAGS_IN_FIELD_0_MUST_BE_REPR_U8: [();
+                        if core::mem::size_of::<B>() == 1 { 0 } else { panic!("Flags in field 0 must be #[repr(u8)]") }
+                    ] = [];
 
-                    const _FLAGS_IN_FIELD_0_EXCEED_THE_BIT_FIELD_SIZE: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<core::num::NonZeroU16>() * 8 > B::max() as usize;
-                        ASSERT
-                    } as usize] = [];
+                    const _FLAGS_IN_FIELD_0_EXCEED_THE_BITFIELD_SIZE: [();
+                        if core::mem::size_of::<core::num::NonZeroU16>() * 8 > B::max() as usize { 0 } else { panic!("Flags in field 0 exceed the bitfield size") }
+                    ] = [];
 
                     const fn _flags_in_field_0_overlap_with_field_1() -> bool {
                         let flags = B::iter();
@@ -5760,7 +5694,7 @@ mod tests {
                     }
 
                     const _FLAGS_IN_FIELD_0_OVERLAP_WITH_FIELD_1: [();
-                        0 - Self::_flags_in_field_0_overlap_with_field_1() as usize
+                        if !Self::_flags_in_field_0_overlap_with_field_1() { 0 } else { panic!("Flags in field 0 overlap with field 1") }
                     ] = [];
 
                     const fn _flags_in_field_0_overlap_with_flags_in_field_2() -> bool {
@@ -5784,26 +5718,24 @@ mod tests {
                     }
 
                     const _FLAGS_IN_FIELD_0_OVERLAP_WITH_FLAGS_IN_FIELD_2: [();
-                        0 - Self::_flags_in_field_0_overlap_with_flags_in_field_2() as usize
+                        if !Self::_flags_in_field_0_overlap_with_flags_in_field_2() { 0 } else { panic!("Flags in field 0 overlap with flags in field 2") }
                     ] = [];
 
-                    const _TYPE_IN_FIELD_1_IS_SMALLER_THAN_THE_SPECIFIED_SIZE_OF_3_BITS: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<C>() * 8 >= 3; ASSERT
-                    } as usize] = [];
+                    const _TYPE_IN_FIELD_1_IS_SMALLER_THAN_THE_SPECIFIED_SIZE_OF_3_BITS: [();
+                        if core::mem::size_of::<C>() * 8 >= 3 { 0 } else { panic!("Type in field 1 is smaller than the specified size of 3 bits") }
+                    ] = [];
 
-                    const _SIGNED_TYPE_IN_FIELD_1_CAN_NEVER_BE_NEGATIVE: [(); 0 - !{
-                        const ASSERT: bool = !C::is_signed() || core::mem::size_of::<C>() * 8 == 3;
-                        ASSERT
-                    } as usize] = [];
+                    const _SIGNED_TYPE_IN_FIELD_1_CAN_NEVER_BE_NEGATIVE: [();
+                        if !C::is_signed() || core::mem::size_of::<C>() * 8 == 3 { 0 } else { panic!("Signed type in field 1 can never be negative") }
+                    ] = [];
 
-                    const _FLAGS_IN_FIELD_2_MUST_BE_REPR_U8: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<D>() == 1; ASSERT
-                    } as usize] = [];
+                    const _FLAGS_IN_FIELD_2_MUST_BE_REPR_U8: [();
+                        if core::mem::size_of::<D>() == 1 { 0 } else { panic!("Flags in field 2 must be #[repr(u8)]") }
+                    ] = [];
 
-                    const _FLAGS_IN_FIELD_2_EXCEED_THE_BIT_FIELD_SIZE: [(); 0 - !{
-                        const ASSERT: bool = core::mem::size_of::<core::num::NonZeroU16>() * 8 > D::max() as usize;
-                        ASSERT
-                    } as usize] = [];
+                    const _FLAGS_IN_FIELD_2_EXCEED_THE_BITFIELD_SIZE: [();
+                        if core::mem::size_of::<core::num::NonZeroU16>() * 8 > D::max() as usize { 0 } else { panic!("Flags in field 2 exceed the bitfield size") }
+                    ] = [];
 
                     const fn _flags_in_field_2_overlap_with_field_1() -> bool {
                         let flags = D::iter();
@@ -5822,16 +5754,12 @@ mod tests {
                     }
 
                     const _FLAGS_IN_FIELD_2_OVERLAP_WITH_FIELD_1: [();
-                        0 - Self::_flags_in_field_2_overlap_with_field_1() as usize
+                        if !Self::_flags_in_field_2_overlap_with_field_1() { 0 } else { panic!("Flags in field 2 overlap with field 1") }
                     ] = [];
 
-                    const _OPTION_OF_NON_ZERO_BITFIELD_HAS_A_DIFFERENT_SIZE: [(); 0 - !{
-                        const ASSERT: bool =
-                            core::mem::size_of::<A>()
-                                ==
-                            core::mem::size_of::<core::option::Option<A>>()
-                        ; ASSERT
-                    } as usize] = [];
+                    const _OPTION_OF_NON_ZERO_BITFIELD_HAS_A_DIFFERENT_SIZE: [();
+                        if core::mem::size_of::<A>() == core::mem::size_of::<core::option::Option<A>>() { 0 } else { panic!("Option of non-zero bitfield has a different size") }
+                    ] = [];
                 }
 
                 // debug
